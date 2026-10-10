@@ -88,6 +88,35 @@ describe('outgoing-copy gate tokenization: a suffix attached to a number is not 
   })
 })
 
+// COPYGATESZAZALEK1010 (2026-10-10): the number-suffix rule one step further.
+// A unit sign between the number and the hyphen ("20%-ot", "50%-kal", "20°-os")
+// hid the digit from the check, so the suffix was read as a standalone word
+// ("ot" -> "öt") and a correct message about a tablet battery was blocked.
+// Every sentence carries three Hungarian markers so the accent check really runs.
+describe('outgoing-copy gate tokenization: a suffix after a percent or degree sign is not prose (COPYGATESZAZALEK1010)', () => {
+  it('the real blocked sentence passes: a percentage with a hyphenated suffix', () => {
+    expect(auditAccent('Töltő nélkül a tablet kb. 20%-ot merült óránként, töltőn pedig 9%-ot nyer, tehát van tartalék, de nem sok.')).toEqual([])
+  })
+
+  it('other suffixes after a percent sign and a degree sign pass', () => {
+    expect(auditAccent('A víz 75°-os lett, tehát van meleg víz, és a tárhely 50%-kal több, mint amit vártam, hogy kell.')).toEqual([])
+  })
+
+  it('a standalone "ot" in the same sentence is still caught -- only the bare word is reported', () => {
+    const text = 'A tablet 20%-ot merült, tehát van baj, mert utána ot percig nem töltött.'
+    const probs = auditAccent(text)
+    const hits = probs.join('\n').match(/ot -> öt \("[^"]*" @(\d+)\)/g) || []
+    expect(hits.length).toBe(1)
+    // the reported occurrence is the standalone word, not the suffix after 20%
+    expect(hits[0]).toContain(`@${text.indexOf(' ot ') + 1}`)
+  })
+
+  it('a percent sign without a number before it does not open the exception', () => {
+    const probs = auditAccent('A %-ot jelet nem kell külön írni, tehát van egyszerűbb út, hogy kész legyen.')
+    expect(probs.some((p) => p.includes('ot -> öt'))).toBe(true)
+  })
+})
+
 // COPYGATEEKEZETVAK915 (2026-09-15): the same prose-vs-identifier class, now on
 // a FILENAME. `Mail.app-ot` is a dotted product name carrying a hyphenated
 // Hungarian suffix. The TECHNICAL mask cut out `Mail.app` and left `-ot` behind,

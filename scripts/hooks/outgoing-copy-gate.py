@@ -898,7 +898,14 @@ def accent_check_tokens(prose: str):
         # accent-stripped "és". These are not prose words; they carry no accent.
         # (2026-08-21: the gate blocked a correct message reading "429-es vagy
         # 403-as". GATEKOTOJEL817 covered letter-hyphen-letter forms, not this one.)
-        if m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+        # The same holds when the number carries a unit sign before the hyphen:
+        # "20%-ot", "50%-kal", "20°-os". The sign sits between the digit and the
+        # hyphen, so the digit test alone missed it and "ot" was read as "öt"
+        # (2026-10-10: a correct "20%-ot merült" message was blocked).
+        if m.start() >= 2 and prose[m.start() - 1] == "-" and (
+            prose[m.start() - 2].isdigit()
+            or (prose[m.start() - 2] in "%°" and m.start() >= 3 and prose[m.start() - 3].isdigit())
+        ):
             continue
         if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
             continue
