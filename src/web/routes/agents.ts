@@ -18,7 +18,7 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
+import { checkPersonaPutBases, snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
 import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
@@ -3006,6 +3006,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
+      claudeMdBase?: string; soulMdBase?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       modelProfile?: string | null
       customProvider?: string | null
@@ -3031,6 +3032,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // Clearing it (null or '') stays allowed, and a body without the field is not checked.
     if (typeof data.customProvider === 'string' && data.customProvider.trim() && !loadCustomProvider(data.customProvider.trim())) {
       json(res, { error: `Unknown custom provider: ${data.customProvider.trim()}` }, 400)
+      return true
+    }
+    // PERSONALOSTUPDATE1109: a write that names the text its editor started from
+    // goes through only while the file is still that text. Checked here, before
+    // the first write of the request (memoryIsolation below is one), so a 409
+    // leaves everything as it was. See persona-write-guard.ts for the incident.
+    const baseCheck = checkPersonaPutBases(data as Record<string, unknown>, [
+      { field: 'claudeMd', path: join(configRoot, 'CLAUDE.md') },
+      { field: 'soulMd', path: join(agentDir(name), 'SOUL.md') },
+    ])
+    if (!baseCheck.ok) {
+      json(res, { error: baseCheck.error, ...(baseCheck.changed ? { changed: baseCheck.changed } : {}) }, baseCheck.status)
       return true
     }
 

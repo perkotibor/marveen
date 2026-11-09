@@ -81,3 +81,69 @@ export function writePersonaFileIfUnchanged(
   }
   return { written: false, sidecarPath: sidecar }
 }
+
+// PERSONALOSTUPDATE1109: the same lost update, one request later.
+//
+// Measured on a live install, 2026-11-09: the wizard's step 2 created an agent
+// (generation wrote CLAUDE.md and SOUL.md at 20:01:40) and loaded both texts
+// into its step-3 editors. At 20:01:58 the main agent added an access section
+// to CLAUDE.md. At 20:03:20 the operator pressed "Create", which PUT both
+// step-2 texts back unconditionally: the added section was gone, no sidecar,
+// no notice. PERSONANOCLOBBER923 could not see it -- it guards the POST's own
+// writes, and generation had long finished.
+//
+// So a PUT may now say which text its editor started from (`claudeMdBase`,
+// `soulMdBase`). When it does, the write happens only while the file on disk is
+// still exactly that text; otherwise the whole request is refused with 409
+// before anything is written. Callers that send no base keep the old
+// last-writer-wins behaviour, so existing API users are not broken.
+
+export const PERSONA_PUT_BASE_FIELDS = { claudeMd: 'claudeMdBase', soulMd: 'soulMdBase' } as const
+
+export interface PersonaPutTarget {
+  field: keyof typeof PERSONA_PUT_BASE_FIELDS
+  path: string
+}
+
+export type PersonaPutBaseCheck =
+  | { ok: true }
+  | { ok: false; status: 400 | 409; error: string; changed?: string[] }
+
+/**
+ * Check the optional `<field>Base` values of a PUT body against the files on
+ * disk. Call it BEFORE the first write of the request: a refusal must leave
+ * every file as it was. A missing file counts as the empty text.
+ */
+export function checkPersonaPutBases(body: Record<string, unknown>, targets: PersonaPutTarget[]): PersonaPutBaseCheck {
+  const changed: string[] = []
+  for (const { field, path } of targets) {
+    const baseField = PERSONA_PUT_BASE_FIELDS[field]
+    const base = body[baseField]
+    if (base === undefined) continue
+    if (typeof base !== 'string') {
+      return { ok: false, status: 400, error: `${baseField} must be a string (the text the editor started from).` }
+    }
+    if (body[field] === undefined) {
+      return { ok: false, status: 400, error: `${baseField} was sent without ${field}: a base only guards a write.` }
+    }
+    let current = ''
+    if (existsSync(path)) {
+      try {
+        current = readFileSync(path, 'utf8')
+      } catch {
+        // Unreadable is not "unchanged": refuse rather than overwrite a file we
+        // could not compare, same direction as snapshotPersonaFile.
+        changed.push(field)
+        continue
+      }
+    }
+    if (current !== base) changed.push(field)
+  }
+  if (changed.length === 0) return { ok: true }
+  return {
+    ok: false,
+    status: 409,
+    error: `${changed.join(', ')} changed on disk since the editor loaded it; nothing was written. Reload the agent and apply the edit again.`,
+    changed,
+  }
+}

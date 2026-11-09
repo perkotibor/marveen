@@ -16,6 +16,9 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
   'claudeMd', 'soulMd', 'mcpJson', 'model',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
   'modelProfile', 'customProvider',
+  // PERSONALOSTUPDATE1109: not written anywhere; they make the claudeMd/soulMd
+  // write conditional (persona-write-guard.ts checkPersonaPutBases).
+  'claudeMdBase', 'soulMdBase',
 ] as const
 
 // APIAGENTWRITE1104: the fields that change what an agent is told (CLAUDE.md, SOUL.md), what it runs (.mcp.json: a

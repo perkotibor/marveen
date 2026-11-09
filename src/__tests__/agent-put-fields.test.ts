@@ -66,6 +66,8 @@ describe('checkAgentPutFields', () => {
       'claudeMd', 'soulMd', 'mcpJson', 'model',
       'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
       'modelProfile', 'customProvider',
+      // PERSONALOSTUPDATE1109: write nothing themselves; they make a claudeMd/soulMd write conditional.
+      'claudeMdBase', 'soulMdBase',
     ])
     expect(AGENT_PUT_WRITABLE_FIELDS).not.toContain('securityProfile')
   })

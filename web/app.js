@@ -3858,16 +3858,26 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
   createBtn.querySelector('.btn-loading').hidden = false
 
   try {
-    // Update with edited content
-    const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claudeMd, soulMd }),
-    })
+    // PERSONALOSTUPDATE1109: the agent already exists and runs with the files
+    // step 2 generated; someone (the operator elsewhere, the main agent) may have
+    // written to them since. So send only the text the operator actually changed
+    // here, and with it the text the editor started from: the server writes only
+    // while the file is still that, and answers 409 otherwise. An untouched
+    // editor sends nothing, and cannot put a stale copy back.
+    const update = {}
+    if (claudeMd !== generatedClaudeMd) { update.claudeMd = claudeMd; update.claudeMdBase = generatedClaudeMd }
+    if (soulMd !== generatedSoulMd) { update.soulMd = soulMd; update.soulMdBase = generatedSoulMd }
+    if (Object.keys(update).length > 0) {
+      const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update),
+      })
 
-    if (!res.ok) {
-      const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Ismeretlen hiba')
+      }
     }
 
     closeModal(agentWizardOverlay)
