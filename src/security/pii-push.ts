@@ -69,6 +69,81 @@ export function parseGithubRemote(url: string): { owner: string; repo: string } 
   return m ? { owner: m[1], repo: m[2] } : null;
 }
 
+// ── ssh host aliases (PIISSHALIAS1110) ──────────────────────────────────────
+//
+// A remote like `git@github-work:o/r.git` names an ssh HOST ALIAS: ~/.ssh/config maps
+// `github-work` to github.com with a per-repo deploy key. That is the usual way to push
+// two repositories with two keys, and parseGithubRemote cannot see github.com in it, so
+// the target was `unknown` -> strict, and a push to a PRIVATE repository was blocked
+// exactly like a public one. Measured 2026-11-10 on a nightly mirror to a private repo:
+// the alias spelling BLOCKED, the same repo spelled git@github.com:o/r.git was PRIVATE.
+//
+// The alias is resolved the way ssh itself will resolve it for the push: `ssh -G <host>`
+// (prints the effective config, opens no connection). It only RAISES what we know, never
+// relaxes on doubt: anything other than hostname github.com, port 22, no ProxyCommand /
+// ProxyJump, and no git-level ssh override (GIT_SSH_COMMAND, GIT_SSH, core.sshCommand,
+// which may point ssh at another config or another program) leaves the target unknown.
+
+/** `ssh -G` output for a host as key -> first value (keys lowercased), or null. */
+export type SshConfigLookup = (host: string) => Record<string, string> | null;
+
+const SSH_HOST = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** host/owner/repo of an scp-like (`[user@]host:o/r`) or `ssh://[user@]host/o/r` remote, else null. */
+export function sshAliasRemote(url: string): { host: string; owner: string; repo: string } | null {
+  const u = url.trim();
+  const m =
+    /^(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9][A-Za-z0-9._-]*):([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(u) ??
+    /^ssh:\/\/(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(u);
+  return m ? { host: m[1], owner: m[2], repo: m[3] } : null;
+}
+
+/** The effective ssh client config for `host` (`ssh -G`), or null if it cannot be read. */
+export function sshConfigFor(host: string, configFile?: string): Record<string, string> | null {
+  if (!SSH_HOST.test(host)) return null; // never hand ssh an option-shaped "host"
+  try {
+    const out = execFileSync('ssh', ['-G', ...(configFile ? ['-F', configFile] : []), '--', host], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const cfg: Record<string, string> = {};
+    for (const line of out.split('\n')) {
+      const i = line.indexOf(' ');
+      if (i <= 0) continue;
+      const k = line.slice(0, i).toLowerCase();
+      if (!(k in cfg)) cfg[k] = line.slice(i + 1).trim();
+    }
+    return cfg;
+  } catch {
+    return null;
+  }
+}
+
+/** owner/repo on github.com, directly or through an ssh alias that ssh resolves to github.com. */
+export function githubTarget(
+  url: string, sshLookup: SshConfigLookup | null,
+): { owner: string; repo: string; via?: string } | null {
+  const gh = parseGithubRemote(url);
+  if (gh) return gh;
+  if (!sshLookup) return null;
+  const a = sshAliasRemote(url);
+  if (!a) return null;
+  const cfg = sshLookup(a.host);
+  if (!cfg) return null;
+  const proxied = [cfg.proxycommand, cfg.proxyjump].some((v) => v !== undefined && v.toLowerCase() !== 'none');
+  if ((cfg.hostname ?? '').toLowerCase() !== 'github.com' || (cfg.port ?? '') !== '22' || proxied) return null;
+  return { owner: a.owner, repo: a.repo, via: a.host };
+}
+
+/** Does git route its ssh through something other than plain `ssh` + the user's config? */
+export function gitSshOverridden(cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.GIT_SSH_COMMAND || env.GIT_SSH) return true;
+  try {
+    return git(['config', '--get', 'core.sshCommand'], cwd).trim() !== '';
+  } catch {
+    return false; // exit 1 = not set
+  }
+}
+
 type FetchLike = (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) =>
   Promise<{ status: number; json: () => Promise<unknown> }>;
 
@@ -89,9 +164,11 @@ type FetchLike = (url: string, init?: { headers?: Record<string, string>; signal
  */
 export async function probeVisibility(
   url: string, fetchImpl: FetchLike = fetch as unknown as FetchLike, timeoutMs = 8000,
+  sshLookup: SshConfigLookup | null = null,
 ): Promise<Visibility> {
-  const gh = parseGithubRemote(url);
+  const gh = githubTarget(url, sshLookup);
   if (!gh) return { state: 'unknown', reason: 'the remote is not a github.com URL, so its visibility cannot be queried' };
+  const name = gh.via ? `${gh.owner}/${gh.repo} (ssh alias "${gh.via}" -> github.com)` : `${gh.owner}/${gh.repo}`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -99,10 +176,10 @@ export async function probeVisibility(
       headers: { 'User-Agent': 'marveen-pii-gate', Accept: 'application/vnd.github+json' },
       signal: ctrl.signal,
     });
-    if (res.status === 404) return { state: 'private', reason: `${gh.owner}/${gh.repo} is not anonymously readable (HTTP 404)` };
+    if (res.status === 404) return { state: 'private', reason: `${name} is not anonymously readable (HTTP 404)` };
     if (res.status === 200) {
       const body = (await res.json()) as { private?: unknown };
-      if (body && body.private === false) return { state: 'public', reason: `${gh.owner}/${gh.repo} is anonymously readable` };
+      if (body && body.private === false) return { state: 'public', reason: `${name} is anonymously readable` };
       return { state: 'unknown', reason: 'HTTP 200 but the body does not say private:false' };
     }
     return { state: 'unknown', reason: `the visibility query answered HTTP ${res.status}` };
@@ -219,6 +296,9 @@ export interface PushedInput {
   exceptions?: readonly PiiException[];
   /** Set by --pii-range: no remote, no probe, strict. */
   skipProbe?: boolean;
+  /** Test seams only; production resolves ssh aliases with `ssh -G` and reads process.env. */
+  sshLookup?: SshConfigLookup;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface PushedResult { exitCode: 0 | 1 | 2; report: string }
@@ -364,7 +444,10 @@ export async function runPushed(input: PushedInput): Promise<PushedResult> {
     const dl = input.denylist ? { denylist: input.denylist, note: 'denylist supplied by the caller' } : loadDenylist(input.cwd);
     const vis: Visibility = input.skipProbe
       ? { state: 'unknown', reason: 'range audit: always strict' }
-      : await probeVisibility(input.remoteUrl, input.fetchImpl);
+      : await probeVisibility(
+        input.remoteUrl, input.fetchImpl, undefined,
+        gitSshOverridden(input.cwd, input.env) ? null : (input.sshLookup ?? ((h) => sshConfigFor(h))),
+      );
 
     const all: PiiFinding[] = [];
     const exc: { file: string; line?: number; detector: string; reason: string }[] = [];

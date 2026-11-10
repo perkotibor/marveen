@@ -159,6 +159,10 @@ Design points, each one a failure of the mod this replaces:
   timeout, a non-GitHub remote) is *unknown* and treated as **public**. Findings block when
   the target is public or unknown; they only downgrade to a loud warning on a positive
   "private". The probe cannot be switched off with an environment variable.
+  An ssh host alias remote (`git@github-work:<o>/<r>.git`, the usual way to push with a
+  per-repository deploy key) counts as github.com only when `ssh -G <alias>` resolves it to
+  `hostname github.com`, `port 22`, with no ProxyCommand/ProxyJump, and git has no ssh
+  override (`GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand`). Anything else stays *unknown*.
 
 ## Deliberate literals, names, and the audit before a repo goes public
 

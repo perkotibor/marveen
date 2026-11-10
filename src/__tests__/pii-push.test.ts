@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseGithubRemote, parseRefLines, probeVisibility, runPushed, splitByMarker, outgoingCommits,
+  sshAliasRemote, sshConfigFor, githubTarget, gitSshOverridden, type SshConfigLookup,
 } from '../security/pii-push.js';
 
 const REPO = process.cwd();
@@ -112,6 +113,109 @@ describe('probeVisibility (anonymous; unknown is never private)', () => {
     let seen: Record<string, string> | undefined;
     await probeVisibility(url, async (_u, init) => { seen = init?.headers; return { status: 404, json: async () => ({}) }; });
     expect(Object.keys(seen ?? {}).map((k) => k.toLowerCase())).not.toContain('authorization');
+  });
+});
+
+// PIISSHALIAS1110: a remote spelled through an ssh host alias (git@github-work:o/r.git) is
+// github.com when ssh itself resolves it there; only a POSITIVE resolution counts.
+describe('ssh host alias -> github.com (only a positive resolution counts)', () => {
+  const gh: SshConfigLookup = () => ({ hostname: 'github.com', port: '22', user: 'git' });
+  const reply = (status: number, body: unknown = {}) => async () => ({ status, json: async () => body });
+
+  it.each([
+    ['git@github-work:o/r.git', 'github-work'], ['github-work:o/r', 'github-work'],
+    ['ssh://git@gh.alias/o/r.git', 'gh.alias'],
+  ])('reads the alias in %s', (u, host) => {
+    expect(sshAliasRemote(u)).toEqual({ host, owner: 'o', repo: 'r' });
+  });
+  it.each(['/srv/git/r.git', 'https://example.com/o/r.git', 'ssh://git@alias:2222/o/r.git', '-oProxyCommand=x:o/r', 'alias:../r'])(
+    'is not an alias remote: %s', (u) => { expect(sshAliasRemote(u)).toBeNull(); });
+
+  it('an alias that resolves to github.com:22 is queried as that repo -> private on 404', async () => {
+    let asked = '';
+    const v = await probeVisibility('git@github-work:o/r.git', async (u) => { asked = u; return { status: 404, json: async () => ({}) }; }, 8000, gh);
+    expect(asked).toBe('https://api.github.com/repos/o/r');
+    expect(v.state).toBe('private');
+    expect(v.reason).toMatch(/ssh alias "github-work" -> github\.com/);
+  });
+  it('...and public stays public', async () => {
+    expect((await probeVisibility('git@github-work:o/r.git', reply(200, { private: false }), 8000, gh)).state).toBe('public');
+  });
+  it('without a lookup (the old default) an alias stays unknown', async () => {
+    expect((await probeVisibility('git@github-work:o/r.git', reply(404))).state).toBe('unknown');
+  });
+  it.each<[string, Record<string, string> | null]>([
+    ['another host', { hostname: 'gitlab.com', port: '22' }],
+    ['a look-alike host', { hostname: 'github.com.evil.io', port: '22' }],
+    ['another port', { hostname: 'github.com', port: '2222' }],
+    ['a ProxyCommand', { hostname: 'github.com', port: '22', proxycommand: 'nc elsewhere 22' }],
+    ['a ProxyJump', { hostname: 'github.com', port: '22', proxyjump: 'bastion' }],
+    ['no hostname line', { port: '22' }],
+    ['an unreadable config', null],
+  ])('%s -> unknown, never queried', async (_why, cfg) => {
+    let called = false;
+    const spy = async () => { called = true; return { status: 404, json: async () => ({}) }; };
+    expect((await probeVisibility('git@github-work:o/r.git', spy, 8000, () => cfg)).state).toBe('unknown');
+    expect(called).toBe(false);
+  });
+  it('a direct github.com URL never consults ssh', () => {
+    expect(githubTarget('git@github.com:o/r.git', () => { throw new Error('must not be called'); })).toEqual({ owner: 'o', repo: 'r' });
+  });
+
+  it.skipIf(spawnSync('ssh', ['-V']).status !== 0)('sshConfigFor reads the real `ssh -G` (no connection)', () => {
+    const cfgDir = mkdtempSync(join(tmp, 'sshcfg-'));
+    const f = join(cfgDir, 'config');
+    writeFileSync(f, 'Host gh-alias\n  HostName github.com\n  User git\nHost jumped\n  HostName github.com\n  ProxyJump bastion\n');
+    expect(sshConfigFor('gh-alias', f)).toMatchObject({ hostname: 'github.com', port: '22' });
+    expect(sshConfigFor('jumped', f)?.proxyjump).toBe('bastion');
+    expect(githubTarget('git@jumped:o/r.git', (h) => sshConfigFor(h, f))).toBeNull();
+  });
+  it('sshConfigFor refuses an option-shaped host without running ssh', () => {
+    expect(sshConfigFor('-oProxyCommand=touch /tmp/x')).toBeNull();
+  });
+
+  it('gitSshOverridden: GIT_SSH_COMMAND, GIT_SSH or core.sshCommand', () => {
+    const dir = newRepo(tmp, 'sshover');
+    expect(gitSshOverridden(dir, {})).toBe(false);
+    expect(gitSshOverridden(dir, { GIT_SSH_COMMAND: 'ssh -F /x' })).toBe(true);
+    expect(gitSshOverridden(dir, { GIT_SSH: '/usr/bin/plink' })).toBe(true);
+    git(dir, ['config', 'core.sshCommand', 'ssh -F /x']);
+    expect(gitSshOverridden(dir, {})).toBe(true);
+  });
+
+  describe('runPushed over an alias remote', () => {
+    const aliasUrl = 'git@github-work:o/r.git';
+    const setup = () => {
+      const dir = newRepo(tmp, `alias-${Math.random().toString(36).slice(2, 8)}`);
+      const base = commit(dir, 'a.txt', 'one\n');
+      const head = commit(dir, 'b.txt', `x ${PERSON}\n`);
+      return { dir, stdin: refLine(head, base) };
+    };
+    const r404 = reply(404) as never;
+    it('private repo behind the alias -> WARNING, push allowed (was BLOCKED as unknown)', async () => {
+      const { dir, stdin } = setup();
+      const r = await runPushed({ remoteName: 'mirror', remoteUrl: aliasUrl, stdin, cwd: dir, fetchImpl: r404, sshLookup: gh, env: {} });
+      expect(r.exitCode).toBe(0);
+      expect(r.report).toMatch(/target PRIVATE: o\/r \(ssh alias "github-work" -> github\.com\)/);
+      expect(r.report).toMatch(/WARNING \(private target/);
+    });
+    it('a git-level ssh override disables the resolution -> unknown -> BLOCK', async () => {
+      const { dir, stdin } = setup();
+      const r = await runPushed({ remoteName: 'mirror', remoteUrl: aliasUrl, stdin, cwd: dir, fetchImpl: r404, sshLookup: gh, env: { GIT_SSH_COMMAND: 'ssh -F /elsewhere' } });
+      expect(r.exitCode).toBe(1);
+      expect(r.report).toMatch(/target UNKNOWN/);
+    });
+    it('core.sshCommand in the repository does the same', async () => {
+      const { dir, stdin } = setup();
+      git(dir, ['config', 'core.sshCommand', 'ssh -F /elsewhere']);
+      const r = await runPushed({ remoteName: 'mirror', remoteUrl: aliasUrl, stdin, cwd: dir, fetchImpl: r404, sshLookup: gh, env: {} });
+      expect(r.exitCode).toBe(1);
+    });
+    it('an alias to a non-github host still BLOCKS', async () => {
+      const { dir, stdin } = setup();
+      const r = await runPushed({ remoteName: 'mirror', remoteUrl: aliasUrl, stdin, cwd: dir, fetchImpl: r404, sshLookup: () => ({ hostname: 'git.example.com', port: '22' }), env: {} });
+      expect(r.exitCode).toBe(1);
+    });
   });
 });
 
