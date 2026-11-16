@@ -22,8 +22,8 @@ for c in d.get('categories',[]):
 ```
 
 The levels of the two categories control steps 2 and 4:
-- **`kanban_archive_done`** (step 2): level 3 → archive on your own. level 2 → do NOT archive, propose it on Telegram ("X done cards older than 7 days are waiting to be archived, OK to go ahead?") and wait for approval. level 1 → only report the number.
-- **`kanban_stuck_nudge`** (step 4): level 3 → ping the assignee on your own, and escalate to the owner ({{OWNER_NAME}}) ONLY after 2 unsuccessful audit rounds (the comment history shows how many times you pinged). level 2 → do not ping on your own, propose it to the owner ({{OWNER_NAME}}) on Telegram. level 1 → only list the stuck tasks.
+- **`kanban_archive_done`** (step 2): level 3 → archive on your own. level 2 → do NOT archive, propose it to the owner ("X done cards older than 7 days are waiting to be archived, OK to go ahead?") and wait for approval. level 1 → only report the number.
+- **`kanban_stuck_nudge`** (step 4): level 3 → ping the assignee on your own, and escalate to the owner ({{OWNER_NAME}}) ONLY after 2 unsuccessful audit rounds (the comment history shows how many times you pinged). level 2 → do not ping on your own, propose it to the owner ({{OWNER_NAME}}). level 1 → only list the stuck tasks.
 
 If the config is missing, unreadable, or the key is not in it (the command above prints nothing) → level 1: only report, do not archive and do not ping. This is the level of `seed-config`; a missing config must not switch on the most permissive behavior.
 
@@ -190,7 +190,7 @@ except Exception: print(0)
 
 5. **Update the state file** (at the END of the run): `store/kanban-audit-state.json` -> `{"last_audit_at": <current Unix timestamp>}`.
 
-6. **Undelegated cards**: every non-archived, NOT `done` card (filter by exclusion, not by listing the statuses) whose assignee is NULL/empty -> log + Telegram only if there are 3+ of them.
+6. **Undelegated cards**: every non-archived, NOT `done` card (filter by exclusion, not by listing the statuses) whose assignee is NULL/empty -> log + owner alert only if there are 3+ of them.
    Report: examined=N,hits=K,0→notmeasured.
 
 6a. **Cards with a status no detector covers** (KANBANSTATUSZVAK916, MANDATORY in every round): the other
@@ -208,7 +208,7 @@ for c in json.load(sys.stdin):
 "
    ```
    **If there is a hit:** it goes into the round's report with ID, status and age, and it also
-   goes out on Telegram (point 7), because the stuck and the
+   goes out as an owner alert (point 7), because the stuck and the
    undelegated measurements do not apply to these cards. **If 0:** it appears as 0 in the report too, do not leave it out,
    otherwise it is not visible that the step ran. Extend the `COVERED` set only if
    a detector actually measures the new status, otherwise the extension hides the card again.
@@ -238,7 +238,7 @@ for c in json.load(sys.stdin):
    (a future time temporarily written into any card's title), otherwise a pattern error looks like zero.
 
 
-7. **Only write on Telegram if** (the first two conditions are COUNTED by their own block, do not decide them in your
+7. **Alert the owner only if** (the first two conditions are COUNTED by their own block, do not decide them in your
    head; both measure against the previous `last_audit_at`, so run them BEFORE the state write of step 5):
    - **there are 3+ stuck tasks that COUNT (critical).** Not every stuck card counts. Step 4 never pings the main
      agent ({{MAIN_AGENT_ID}}) about its own stuck card, and such a card typically waits on the owner: if it counted,
@@ -302,7 +302,7 @@ print('TELEGRAM: YES (new blocker)' if new else 'TELEGRAM: no')
      because it was billing.
      The rule: if a card (a) describes a hard stop, (b) its assignee is the
      owner, or according to its description only the owner can do it, and (c) there is no
-     sign that anyone told them, then it goes out on Telegram.
+     sign that anyone told them, then it goes out as an owner alert.
      Checking (c): look at whether anyone asked for it to be forwarded in an inter-agent
      message, and skim your own outgoing messages. If in doubt, rather
      speak up: a blocker said twice is cheaper than a fleet standing still for four hours.

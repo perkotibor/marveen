@@ -22,8 +22,8 @@ for c in d.get('categories',[]):
 ```
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
-- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától. level 2 → NE archiválj, Telegramon javasold ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.
-- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, Telegramon javasold a tulajdonosnak ({{OWNER_NAME}}). level 1 → csak listázd a beakadt taskokat.
+- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától. level 2 → NE archiválj, javasold a tulajdonosnak ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.
+- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, javasold a tulajdonosnak ({{OWNER_NAME}}). level 1 → csak listázd a beakadt taskokat.
 
 Ha a config hiányzik, nem olvasható, vagy a kulcs nincs benne (a fenti parancs semmit nem ír ki) → level 1: csak jelezz, ne archiválj és ne pingelj. Ez a `seed-config` szintje; egy hiányzó config ne a legmegengedőbb viselkedést élesítse.
 
@@ -190,7 +190,7 @@ except Exception: print(0)
 
 5. **State-fájl frissítés** (a futás VÉGÉN): `store/kanban-audit-state.json` -> `{"last_audit_at": <current Unix timestamp>}`.
 
-6. **Delegálatlan kártyák**: minden nem archivált, NEM `done` kártya (kizárással szűrj, ne a státuszok felsorolásával), aminek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+6. **Delegálatlan kártyák**: minden nem archivált, NEM `done` kártya (kizárással szűrj, ne a státuszok felsorolásával), aminek assignee NULL/üres -> log + tulajdonosi riasztás csak akkor ha 3+ ilyen van.
    Jelentsd: vizsgált=N,találat=K,0→nemmért.
 
 6a. **Detektorral nem fedett státuszú kártyák** (KANBANSTATUSZVAK916, KÖTELEZŐ minden körben): a többi
@@ -207,7 +207,7 @@ for c in json.load(sys.stdin):
     print(c['id'][:8],'|',c.get('status'),'|',round(age,1),'napja nem mozdult |',(c.get('title') or '')[:50])
 "
    ```
-   **Ha van találat:** a kör jelentésébe ID-vel, státusszal és korral kerüljön bele, és Telegramon is
+   **Ha van találat:** a kör jelentésébe ID-vel, státusszal és korral kerüljön bele, és tulajdonosi riasztásként is
    menjen ki (7. pont), mert ezekre a kártyákra a stuck- és a
    delegálatlan-mérés nem érvényes. **Ha 0:** a jelentésben is 0-ként szerepeljen, ne maradjon ki,
    különben nem látszik, hogy a lépés lefutott. A `COVERED` halmazt csak akkor bővítsd, ha
@@ -238,7 +238,7 @@ for c in json.load(sys.stdin):
    (bármely kártya címébe ideiglenesen írt jövőbeli idő), különben a minta-hiba nullának látszik.
 
 
-7. **Telegram csak akkor írj ha** (az első két feltételt a saját blokkja SZÁMOLJA, ne fejben döntsd el; mindkettő az
+7. **Csak akkor riaszd a tulajdonost, ha** (az első két feltételt a saját blokkja SZÁMOLJA, ne fejben döntsd el; mindkettő az
    előző `last_audit_at`-hoz mér, ezért az 5. lépés state-írása ELŐTT futtasd őket):
    - **3+ SZÁMÍTÓ beakadt task van (kritikus).** Nem minden beakadt kártya számít. A fő-ágens ({{MAIN_AGENT_ID}})
      saját beakadt kártyáját a 4. lépés eleve nem pingeli, és az jellemzően a tulajdonosra vár: ha beleszámítana,
@@ -300,7 +300,7 @@ print('TELEGRAM: IGEN (új blokker)' if new else 'TELEGRAM: nem')
      mert számlázás.
      A szabály: ha egy kártya (a) kemény megállást ír le, (b) az assignee-je a
      tulajdonos, vagy a leírása szerint csak ő tudja elvégezni, és (c) nem
-     látszik, hogy szólt volna neki bárki, akkor kimegy Telegramon.
+     látszik, hogy szólt volna neki bárki, akkor kimegy tulajdonosi riasztásként.
      A (c) ellenőrzése: nézd meg, kérte-e valaki inter-agent üzenetben a
      továbbítást, és fusd át a saját kimenő üzeneteidet. Ha kétséges, inkább
      szólj: a kétszer elmondott blokkoló olcsóbb, mint a négy órát álló flotta.
